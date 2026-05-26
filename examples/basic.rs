@@ -21,7 +21,6 @@ fn main() {
         .with(
             tracing_timetree::layer()
                 .with_min(Duration::from_millis(1))
-                .with_level(true)
                 .with_target(true),
         )
         .init();

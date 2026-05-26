@@ -91,7 +91,7 @@ impl Default for TimingLayer {
         Self {
             min: Duration::ZERO,
             color: Color::Auto,
-            show_level: false,
+            show_level: true,
             show_target: false,
             make_writer: stderr_writer,
             last_depth: AtomicUsize::new(usize::MAX),
@@ -120,7 +120,7 @@ impl<W: MakeWriter> TimingLayer<W> {
         self
     }
 
-    /// Prefix every line with the span's level (`INFO `, `WARN `, …). Off by
+    /// Prefix every line with the span's level (`INFO `, `WARN `, …). On by
     /// default.
     pub fn with_level(mut self, show: bool) -> Self {
         self.show_level = show;
