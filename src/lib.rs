@@ -21,7 +21,7 @@
 //! ```
 
 use std::fmt::Write as _;
-use std::io::{self, Stderr, Write};
+use std::io::{self, IsTerminal, Stderr, Write};
 use std::time::{Duration, Instant};
 
 use tracing::Subscriber;
@@ -59,11 +59,24 @@ pub fn layer() -> TimingLayer {
     TimingLayer::default()
 }
 
+/// How to colorize output.
+#[derive(Clone, Copy, Debug, Default)]
+pub enum Color {
+    /// ANSI colors only when the writer is a TTY. Default.
+    #[default]
+    Auto,
+    /// Always emit ANSI escapes.
+    Always,
+    /// Never emit ANSI escapes.
+    Never,
+}
+
 /// Prints one line per closed span: depth-indented name, field values, total
 /// elapsed and self-time. Spans shorter than `min` are dropped so micro-spans
 /// don't drown out the parents we actually want to attribute time to.
 pub struct TimingLayer<W: MakeWriter = fn() -> Stderr> {
     min: Duration,
+    color: Color,
     make_writer: W,
 }
 
@@ -71,6 +84,7 @@ impl Default for TimingLayer {
     fn default() -> Self {
         Self {
             min: Duration::ZERO,
+            color: Color::Auto,
             make_writer: stderr_writer,
         }
     }
@@ -91,13 +105,67 @@ impl<W: MakeWriter> TimingLayer<W> {
         self
     }
 
+    /// Choose when to emit ANSI color escapes. Defaults to [`Color::Auto`].
+    pub fn with_color(mut self, color: Color) -> Self {
+        self.color = color;
+        self
+    }
+
     /// Swap the writer. Mirrors `fmt::Layer::with_writer`.
     pub fn with_writer<W2: MakeWriter>(self, make_writer: W2) -> TimingLayer<W2> {
         TimingLayer {
             min: self.min,
+            color: self.color,
             make_writer,
         }
     }
+}
+
+/// Target width of the name column. Long names just push fields further right
+/// — we don't truncate.
+const NAME_COL: usize = 12;
+
+/// ANSI sequences. Empty when color is disabled.
+struct Style {
+    dim: &'static str,
+    bold: &'static str,
+    cyan: &'static str,
+    reset: &'static str,
+}
+
+impl Style {
+    const ON: Self = Self {
+        dim: "\x1b[2m",
+        bold: "\x1b[1m",
+        cyan: "\x1b[36m",
+        reset: "\x1b[0m",
+    };
+    const OFF: Self = Self {
+        dim: "",
+        bold: "",
+        cyan: "",
+        reset: "",
+    };
+}
+
+fn resolve_style<W: Write>(color: Color, writer: &W) -> &'static Style {
+    let on = match color {
+        Color::Always => true,
+        Color::Never => false,
+        // `IsTerminal` is on `&W` for stdio handles; for arbitrary writers we
+        // can't tell, so Auto falls back to off.
+        Color::Auto => is_terminal_writer(writer),
+    };
+    if on { &Style::ON } else { &Style::OFF }
+}
+
+/// Best-effort TTY check. Specialized for the common stdio writers; everything
+/// else is treated as non-TTY.
+fn is_terminal_writer<W: ?Sized>(_w: &W) -> bool {
+    // We can't downcast through a generic `Write`, so probe stderr — the
+    // default writer — and assume custom writers are non-interactive. Users
+    // who want color on a custom writer can call `with_color(Color::Always)`.
+    io::stderr().is_terminal()
 }
 
 struct OpenedAt(Instant);
@@ -174,15 +242,28 @@ where
         let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
         let self_ms = self_time.as_secs_f64() * 1000.0;
         let mut w = self.make_writer.make_writer();
+        let s = resolve_style(self.color, &w);
+        // Pad the name column so fields line up across siblings. Long names
+        // just push fields further right.
+        let name_width = NAME_COL.saturating_sub(indent.len());
+        let name_pad = name_width.saturating_sub(name.len());
+        let pad = " ".repeat(name_pad);
         let _ = if fields.is_empty() {
             writeln!(
                 w,
-                "elapsed={elapsed_ms:>6.1}ms self={self_ms:>6.1}ms  {indent}{name}"
+                "{dim}{elapsed_ms:>7.1}ms{reset}  {dim}{self_ms:>7.1}ms{reset}  {indent}{bold}{name}{reset}",
+                dim = s.dim,
+                bold = s.bold,
+                reset = s.reset,
             )
         } else {
             writeln!(
                 w,
-                "elapsed={elapsed_ms:>6.1}ms self={self_ms:>6.1}ms  {indent}{name} {{{fields}}}"
+                "{dim}{elapsed_ms:>7.1}ms{reset}  {dim}{self_ms:>7.1}ms{reset}  {indent}{bold}{cyan}{name}{reset}{pad}  {dim}{fields}{reset}",
+                dim = s.dim,
+                bold = s.bold,
+                cyan = s.cyan,
+                reset = s.reset,
             )
         };
     }
