@@ -22,6 +22,7 @@
 
 use std::fmt::Write as _;
 use std::io::{self, IsTerminal, Stderr, Write};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use tracing::{Level, Subscriber};
@@ -80,6 +81,9 @@ pub struct TimingLayer<W: MakeWriter = fn() -> Stderr> {
     show_level: bool,
     show_target: bool,
     make_writer: W,
+    /// Depth of the last emitted line. `usize::MAX` means "nothing emitted
+    /// yet" — used to suppress the leading blank line.
+    last_depth: AtomicUsize,
 }
 
 impl Default for TimingLayer {
@@ -90,6 +94,7 @@ impl Default for TimingLayer {
             show_level: false,
             show_target: false,
             make_writer: stderr_writer,
+            last_depth: AtomicUsize::new(usize::MAX),
         }
     }
 }
@@ -137,6 +142,7 @@ impl<W: MakeWriter> TimingLayer<W> {
             show_level: self.show_level,
             show_target: self.show_target,
             make_writer,
+            last_depth: self.last_depth,
         }
     }
 }
@@ -331,6 +337,16 @@ where
         let s = resolve_style(self.color, &w);
 
         let mut line = String::new();
+        // Spans close child-first, so the depth sequence walks bottom-up:
+        // child (deep), then parent (shallow). When the next line's depth
+        // jumps *back down* (deeper than the previous), we're starting a new
+        // subtree — insert a blank line so the new group reads as belonging
+        // to the parent that follows, not the one that just closed.
+        // `Relaxed` is fine: cross-thread ordering doesn't need to be exact.
+        let prev_depth = self.last_depth.swap(depth, Ordering::Relaxed);
+        if prev_depth != usize::MAX && depth > prev_depth {
+            line.push('\n');
+        }
         if self.show_level {
             let lvl = *metadata.level();
             let _ = write!(
