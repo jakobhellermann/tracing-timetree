@@ -9,3 +9,4 @@ repository = "https://github.com/jakobhellermann/tracing-timetree"
 [dependencies]
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry"] }
+terminal_size = "0.4"
