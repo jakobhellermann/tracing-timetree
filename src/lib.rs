@@ -261,10 +261,15 @@ fn is_terminal_writer<W: ?Sized>(_w: &W) -> bool {
 
 struct OpenedAt(Instant);
 struct Fields(String);
-/// Sum of elapsed time of direct children that have closed so far.
-/// Subtract from this span's elapsed to get its self-time.
+/// Bookkeeping about direct children that have closed so far. `elapsed` is
+/// subtracted from this span's own elapsed to get its self-time. `skipped`
+/// counts direct children that fell below `min` and were not printed, so we
+/// can surface a `(N skipped)` summary on the parent.
 #[derive(Default)]
-struct ChildrenElapsed(Duration);
+struct ChildrenStats {
+    elapsed: Duration,
+    skipped: u32,
+}
 
 struct FieldVisitor<'a>(&'a mut String);
 impl Visit for FieldVisitor<'_> {
@@ -294,7 +299,7 @@ where
         let mut ext = span.extensions_mut();
         ext.insert(OpenedAt(Instant::now()));
         ext.insert(Fields(fields));
-        ext.insert(ChildrenElapsed::default());
+        ext.insert(ChildrenStats::default());
     }
 
     fn on_close(&self, id: Id, ctx: Context<'_, S>) {
@@ -304,22 +309,27 @@ where
             .get::<OpenedAt>()
             .map(|o| o.0.elapsed())
             .unwrap_or_default();
+        let filtered = elapsed < self.min;
         // Add our elapsed to the parent's children total so its self-time can
         // subtract us. Done before the early-return so filtered children still
         // count toward the parent — otherwise the parent's self-time would
-        // inflate by all the noise we hid.
+        // inflate by all the noise we hid. Also bump the parent's skipped
+        // counter when we're being filtered, so it can surface a summary.
         if let Some(parent) = span.parent()
-            && let Some(c) = parent.extensions_mut().get_mut::<ChildrenElapsed>()
+            && let Some(c) = parent.extensions_mut().get_mut::<ChildrenStats>()
         {
-            c.0 += elapsed;
+            c.elapsed += elapsed;
+            if filtered {
+                c.skipped += 1;
+            }
         }
-        if elapsed < self.min {
+        if filtered {
             return;
         }
-        let children_elapsed = span
+        let (children_elapsed, skipped) = span
             .extensions()
-            .get::<ChildrenElapsed>()
-            .map(|c| c.0)
+            .get::<ChildrenStats>()
+            .map(|c| (c.elapsed, c.skipped))
             .unwrap_or_default();
         let self_time = elapsed.saturating_sub(children_elapsed);
         let depth = span.scope().skip(1).count();
@@ -366,7 +376,8 @@ where
         // follows further right.
         let name_width = NAME_COL.saturating_sub(indent.len());
         let name_pad = name_width.saturating_sub(name.len());
-        let name_color = if fields.is_empty() { "" } else { s.cyan };
+        let has_trailing = !fields.is_empty() || skipped > 0;
+        let name_color = if has_trailing { s.cyan } else { "" };
         let _ = write!(
             line,
             "{bold}{name_color}{name}{reset}{pad:width$}",
@@ -375,6 +386,14 @@ where
             pad = "",
             width = name_pad,
         );
+        if skipped > 0 {
+            let _ = write!(
+                line,
+                "  {dim}({skipped} skipped){reset}",
+                dim = s.dim,
+                reset = s.reset,
+            );
+        }
         if !fields.is_empty() {
             let _ = write!(line, "  {dim}{fields}{reset}", dim = s.dim, reset = s.reset);
         }
