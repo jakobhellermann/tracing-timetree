@@ -114,6 +114,16 @@ impl<W: MakeWriter> TimingLayer<W> {
         self
     }
 
+    /// Convenience for [`Self::with_min`] using milliseconds.
+    pub fn with_min_ms(self, ms: u64) -> Self {
+        self.with_min(Duration::from_millis(ms))
+    }
+
+    /// Convenience for [`Self::with_min`] using microseconds.
+    pub fn with_min_us(self, us: u64) -> Self {
+        self.with_min(Duration::from_micros(us))
+    }
+
     /// Choose when to emit ANSI color escapes. Defaults to [`Color::Auto`].
     pub fn with_color(mut self, color: Color) -> Self {
         self.color = color;
