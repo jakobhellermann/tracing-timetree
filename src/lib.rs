@@ -364,9 +364,7 @@ where
         // to the parent that follows, not the one that just closed.
         // `Relaxed` is fine: cross-thread ordering doesn't need to be exact.
         let prev_depth = self.last_depth.swap(depth, Ordering::Relaxed);
-        if prev_depth != usize::MAX && depth > prev_depth {
-            line.push('\n');
-        }
+        let prepend_blank = prev_depth != usize::MAX && depth > prev_depth;
         if self.show_level {
             let lvl = *metadata.level();
             let _ = write!(
@@ -427,6 +425,9 @@ where
             };
         }
         line.push('\n');
+        if prepend_blank {
+            let _ = w.write_all(b"\n");
+        }
         let _ = w.write_all(line.as_bytes());
     }
 }
